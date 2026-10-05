@@ -2657,7 +2657,9 @@ func (s *Connection) WriteIoCtlReq(req *IoCtlReq) (res IoCtlRes, err error) {
 	if err != nil {
 		return res, err
 	}
-	if _, err = headerStatus("IoCtlRequest", buf); err != nil {
+	// STATUS_BUFFER_OVERFLOW still carries data: the output was cut at
+	// MaxOutputResponse and the caller can read the rest (a pipe's message).
+	if _, err = headerStatus("IoCtlRequest", buf, StatusBufferOverflow); err != nil {
 		return res, err
 	}
 

@@ -85,8 +85,48 @@ type pipeHandle struct {
 	name    string
 	backend PipeBackend
 
-	mu     sync.Mutex
-	closed bool
+	mu      sync.Mutex
+	closed  bool
+	pending []byte // rest of a message that overflowed the client's buffer
+}
+
+// clip bounds a pipe reply to the client's buffer of max bytes. A longer
+// message is cut at max and the rest is kept for the client's next READ,
+// with STATUS_BUFFER_OVERFLOW telling the client more of the message follows
+// (MS-SMB2 3.3.5.12, 3.3.5.15.1; MS-FSCC 2.3.49). Windows asks for 1024
+// bytes on FSCTL_PIPE_TRANSCEIVE, so e.g. a srvsvc share list of a dozen
+// shares already overflows. max <= 0 means no limit. A new message replaces
+// whatever an earlier one left unread.
+func (h *pipeHandle) clip(out []byte, max int) ([]byte, uint32) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if max <= 0 || len(out) <= max {
+		h.pending = nil
+		return out, smb.StatusOk
+	}
+	h.pending = append([]byte(nil), out[max:]...)
+	return out[:max], smb.StatusBufferOverflow
+}
+
+// takePending returns up to max bytes of a message left over by clip, with
+// STATUS_BUFFER_OVERFLOW while more remains. ok is false when nothing is
+// pending and the READ should go to the backend.
+func (h *pipeHandle) takePending(max int) (out []byte, status uint32, ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.pending) == 0 {
+		return nil, 0, false
+	}
+	n := len(h.pending)
+	if max > 0 && n > max {
+		n = max
+	}
+	out, h.pending = h.pending[:n], h.pending[n:]
+	if len(h.pending) > 0 {
+		return out, smb.StatusBufferOverflow, true
+	}
+	h.pending = nil
+	return out, smb.StatusOk, true
 }
 
 func (h *pipeHandle) Stat() (FileInfo, error) {

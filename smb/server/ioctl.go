@@ -98,7 +98,8 @@ func (c *Conn) handleIoCtl(ctx pduCtx, raw []byte, h *smb.Header) error {
 				c.RemoteAddr, ph.name, status)
 			return c.writeRawError(ctx, h, status)
 		}
-		return c.writeIoCtlReply(ctx, h, &req, out, smb.StatusOk)
+		out, status = ph.clip(out, int(req.MaxOutputResponse))
+		return c.writeIoCtlReply(ctx, h, &req, out, status)
 	}
 	if tree.Share.VFS == nil {
 		logger.Debugf("IoCtl from %s: share %q has nil VFS -> StatusNotSupported",
