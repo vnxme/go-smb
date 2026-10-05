@@ -78,8 +78,21 @@ func (c *Conn) handleRead(ctx pduCtx, raw []byte, h *smb.Header) error {
 		status uint32
 		err    error
 	)
+	// A pipe READ may end with STATUS_BUFFER_OVERFLOW: the data is sent and
+	// the rest of the message waits for the next READ (see pipeHandle.clip).
+	overflow := false
 	if ph, ok := hndl.(*pipeHandle); ok {
-		out, status, err = ph.backend.Read(context.Background(), int(length))
+		var pending bool
+		out, status, pending = ph.takePending(int(length))
+		if !pending {
+			out, status, err = ph.backend.Read(context.Background(), int(length))
+			if err == nil && status == smb.StatusOk {
+				out, status = ph.clip(out, int(length))
+			}
+		}
+		if err == nil && status == smb.StatusBufferOverflow {
+			overflow, status = true, smb.StatusOk
+		}
 		if err == nil && status == smb.StatusOk {
 			n = len(out)
 		}
@@ -104,8 +117,12 @@ func (c *Conn) handleRead(ctx pduCtx, raw []byte, h *smb.Header) error {
 		return c.writeRawError(ctx, h, smb.StatusEndOfFile)
 	}
 
+	replyStatus := smb.StatusOk
+	if overflow {
+		replyStatus = smb.StatusBufferOverflow
+	}
 	res := smb.ReadRes{
-		Header:        buildResponseHeader(h, smb.StatusOk, h.SessionID, smb.CommandRead),
+		Header:        buildResponseHeader(h, replyStatus, h.SessionID, smb.CommandRead),
 		StructureSize: 17,
 		DataOffset:    80, // 64 (header) + 16 (fixed body before Buffer)
 		DataLength:    uint32(n),

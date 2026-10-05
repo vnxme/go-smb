@@ -23,6 +23,7 @@
 package smbtransport
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/jfjallid/go-smb/smb"
@@ -53,7 +54,28 @@ func (t *SMBTransport) Transceive(pdu []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ioCtlRes.Buffer, nil
+	out := ioCtlRes.Buffer
+	if ioCtlRes.Header.Status != smb.StatusBufferOverflow {
+		return out, nil
+	}
+	// The reply outgrew MaxOutputResponse: READ the rest of the PDU, whose
+	// full length is the frag_length in its common header.
+	if len(out) < 10 {
+		return nil, fmt.Errorf("pipe transceive overflowed after %d bytes", len(out))
+	}
+	fragLen := int(binary.LittleEndian.Uint16(out[8:10]))
+	for len(out) < fragLen {
+		buf := make([]byte, fragLen-len(out))
+		n, err := t.f.ReadFile(buf, 0)
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			return nil, fmt.Errorf("pipe read returned no data after %d of %d bytes", len(out), fragLen)
+		}
+		out = append(out, buf[:n]...)
+	}
+	return out, nil
 }
 
 func (t *SMBTransport) Write(pdu []byte) error {
